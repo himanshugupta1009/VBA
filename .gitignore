@@ -5,3 +5,7 @@ nets/
 .DS_Store
 *.pyc
 *.pyo
+.python-version
+VBA_training_data/
+VBA_training_data_32/
+checkpoints_vlba/
