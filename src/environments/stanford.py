@@ -11,6 +11,29 @@ from configs.environments.stanford import *
 from src.environments.abstract import AbstractEnvironment
 from utils.utils import *
 
+# Compatibility shim for newer NumPy versions, where deprecated scalar aliases
+# like np.int were removed. HumANav still uses the older names.
+if not hasattr(np, "int"):
+    np.int = int
+
+# Compatibility shim for newer pyassimp versions, where load() returns a
+# context manager instead of a scene object. HumANav expects the older API.
+try:
+    import pyassimp
+    from contextlib import AbstractContextManager
+
+    _pyassimp_load = pyassimp.load
+
+    def _legacy_pyassimp_load(*args, **kwargs):
+        scene_or_cm = _pyassimp_load(*args, **kwargs)
+        if isinstance(scene_or_cm, AbstractContextManager):
+            return scene_or_cm.__enter__()
+        return scene_or_cm
+
+    pyassimp.load = _legacy_pyassimp_load
+except Exception:
+    pass
+
 
 sep = Stanford_Environment_Params()
 
@@ -644,6 +667,12 @@ class StanfordEnvironment(AbstractEnvironment):
         remove = 4
         rounding = 3
 
+        # print("epoch_step:", epoch_step)
+        # print("batch_size:", batch_size)
+        # print("len(data_files_indices):", len(data_files_indices))
+        # print("start:", epoch_step * batch_size)
+        # print("end:", (epoch_step + 1) * batch_size)
+
         if (epoch_step + 1)*batch_size > len(data_files_indices):  # If amount of training data not divisible by batch size
             indices = data_files_indices[epoch_step*batch_size:]
         else:
@@ -653,7 +682,9 @@ class StanfordEnvironment(AbstractEnvironment):
         blur = np.zeros(len(indices))
         blur_indices = np.random.choice(len(indices), num_blurred_images, replace=False)
         blur[blur_indices] = 1.
+        # par_batch = None
 
+        # print("Getting training batch with indices: ", indices)
         for i in range(len(indices)):
             index = indices[i]
             img_path = self.training_data_files[index]

@@ -196,9 +196,11 @@ class ObservationGenerator(nn.Module):
         t1 = time.time()
 
         if cvae_params.save_model:
-            torch.save(self.state_dict(), cvae_params.save_path + "/gen_pre_trained")
-            print("Saving pre-trained generative model to %s" %
-                  (cvae_params.save_path + "/gen_pre_trained"))
+            # torch.save(self.state_dict(), cvae_params.save_path + "/gen_pre_trained")
+            torch.save(self.state_dict(), cvae_params.save_path)
+            # print("Saving pre-trained generative model to %s" %
+            #       (cvae_params.save_path + "/gen_pre_trained"))
+            print("Saving cvae model to {}".format(cvae_params.save_path))
 
         print("Done pretraining")
 
