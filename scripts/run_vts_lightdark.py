@@ -1,6 +1,7 @@
 # author: @sdeglurkar, @jatucker4, @michaelhlim
 
 import cv2
+import json
 import math
 import numpy as np
 import os.path
@@ -29,9 +30,85 @@ vlp = VTS_LightDark_Params()
 sep = Stanford_Environment_Params()
 
 
+class DatasetCollector:
+    def __init__(self, root_dir, run_id, config):
+        self.root_dir = root_dir
+        self.run_id = run_id
+        self.config = config
+        self.run_dir = os.path.join(root_dir, run_id)
+        self.episodes_dir = os.path.join(self.run_dir, "episodes")
+
+        check_path(root_dir)
+        check_path(self.run_dir)
+        check_path(self.episodes_dir)
+
+        metadata_path = os.path.join(self.run_dir, "metadata.json")
+        with open(metadata_path, "w") as f:
+            json.dump(config, f, indent=2, sort_keys=True)
+
+    def start_episode(self, episode_idx):
+        episode_dir = os.path.join(self.episodes_dir, f"episode_{episode_idx:04d}")
+        images_dir = os.path.join(episode_dir, "images")
+        check_path(episode_dir)
+        check_path(images_dir)
+        return {
+            "episode_dir": episode_dir,
+            "images_dir": images_dir,
+            "step_indices": [],
+            "image_files": [],
+            "states": [],
+            "orientations": [],
+            "particle_states": [],
+            "particle_weights": [],
+            "actions": [],
+            "rewards": [],
+            "dones": [],
+            "next_states": [],
+            "next_orientations": [],
+        }
+
+    def record_step(self, episode_data, step_idx, image_bgr, state, orientation,
+                    particle_states, particle_weights, action, reward, done,
+                    next_state, next_orientation):
+        image_file = f"step_{step_idx:04d}.png"
+        image_path = os.path.join(episode_data["images_dir"], image_file)
+        image_bgr = cv2.resize(image_bgr, (512, 512), interpolation=cv2.INTER_AREA)
+        cv2.imwrite(image_path, image_bgr)
+
+        episode_data["step_indices"].append(step_idx)
+        episode_data["image_files"].append(image_file)
+        episode_data["states"].append(np.asarray(state, dtype=np.float32))
+        episode_data["orientations"].append(np.float32(orientation))
+        episode_data["particle_states"].append(np.asarray(particle_states, dtype=np.float32))
+        episode_data["particle_weights"].append(np.asarray(particle_weights, dtype=np.float32))
+        episode_data["actions"].append(np.asarray(action, dtype=np.float32))
+        episode_data["rewards"].append(np.float32(reward))
+        episode_data["dones"].append(bool(done))
+        episode_data["next_states"].append(np.asarray(next_state, dtype=np.float32))
+        episode_data["next_orientations"].append(np.float32(next_orientation))
+
+    def finalize_episode(self, episode_data):
+        episode_path = os.path.join(episode_data["episode_dir"], "episode_data.npz")
+        np.savez_compressed(
+            episode_path,
+            step_indices=np.asarray(episode_data["step_indices"], dtype=np.int32),
+            image_files=np.asarray(episode_data["image_files"]),
+            states=np.asarray(episode_data["states"], dtype=np.float32),
+            orientations=np.asarray(episode_data["orientations"], dtype=np.float32),
+            particle_states=np.asarray(episode_data["particle_states"], dtype=np.float32),
+            particle_weights=np.asarray(episode_data["particle_weights"], dtype=np.float32),
+            actions=np.asarray(episode_data["actions"], dtype=np.float32),
+            rewards=np.asarray(episode_data["rewards"], dtype=np.float32),
+            dones=np.asarray(episode_data["dones"], dtype=np.bool_),
+            next_states=np.asarray(episode_data["next_states"], dtype=np.float32),
+            next_orientations=np.asarray(episode_data["next_orientations"], dtype=np.float32),
+        )
+
+
 def vts_lightdark(model, experiment_id, train, model_path, 
                 shared_enc=False, independent_enc=False,
-                test_env_is_diff=False, test_img_is_diff=False):
+                test_env_is_diff=False, test_img_is_diff=False,
+                dataset_collector=None):
     ################################
     # Create variables necessary for tracking diagnostics
     ################################
@@ -77,6 +154,7 @@ def vts_lightdark(model, experiment_id, train, model_path,
     # Begin main dualSMC loop
     for episode in range(num_loops):
         episode += 1
+        episode_data = None
 
         if episode != 1:
             env.reset_environment()
@@ -101,6 +179,9 @@ def vts_lightdark(model, experiment_id, train, model_path,
         mean_state = model.get_mean_state(par_states, normalized_weights).detach().cpu().numpy()  # Goes into replay buffer
 
         pft_planner = PFTDPW(env, model.measure_net, model.generator, shared_enc)  # Why is this created in each episode
+
+        if dataset_collector is not None and not train:
+            episode_data = dataset_collector.start_episode(episode)
 
         if vlp.show_traj and episode % vlp.display_iter == 0:
             check_path(img_path + "/iters/")
@@ -187,6 +268,8 @@ def vts_lightdark(model, experiment_id, train, model_path,
             action, future_actions = pft_planner.solve_viz(par_states, normalized_weights.detach().cpu().numpy())
             # For visualizing the planned trajectory
             mean_s = model.get_mean_state(par_states, normalized_weights).detach().cpu().numpy()
+            belief_particle_states = par_states.copy()
+            belief_particle_weights = normalized_weights.detach().cpu().numpy().copy()
 
             #######################################
             # Resampling
@@ -355,6 +438,21 @@ def vts_lightdark(model, experiment_id, train, model_path,
                 next_obs, next_pre_norm, _, _, _ = env.get_observation(normalization_data=normalization_data, occlusion=True)
             else:  
                 next_obs, next_pre_norm, _, _, _ = env.get_observation(normalization_data=normalization_data)
+            if episode_data is not None:
+                dataset_collector.record_step(
+                    episode_data=episode_data,
+                    step_idx=step,
+                    image_bgr=curr_pre_norm,
+                    state=curr_state,
+                    orientation=curr_orientation,
+                    particle_states=belief_particle_states,
+                    particle_weights=belief_particle_weights,
+                    action=action,
+                    reward=reward,
+                    done=env.done,
+                    next_state=next_state,
+                    next_orientation=next_orientation,
+                )
             #######################################
             if train:
                 model.replay_buffer.push(curr_state, action, reward, next_state, env.done, curr_obs_tensor,
@@ -384,6 +482,9 @@ def vts_lightdark(model, experiment_id, train, model_path,
 
             if env.done:
                 break
+
+        if episode_data is not None:
+            dataset_collector.finalize_episode(episode_data)
 
         # TODO TRY BOTH MEAN AND NOT FOR THE LOSS PLOTS
         # Get the average loss of each model for this episode if we are training
@@ -504,7 +605,7 @@ def vts_lightdark(model, experiment_id, train, model_path,
 
 def vts_lightdark_driver(shared_enc=False, independent_enc=False, load_paths=None, pre_training=True, save_pretrained_model=True,
                    end_to_end=True, save_online_model=True, test=True, test_env_is_diff=False,
-                   test_img_is_diff=False):
+                   test_img_is_diff=False, dataset_dir=None):
 
     torch.manual_seed(vlp.torch_seed)
     random.seed(vlp.random_seed)
@@ -526,6 +627,32 @@ def vts_lightdark_driver(shared_enc=False, independent_enc=False, load_paths=Non
     # Create a model and environment object
     model = VTS(shared_enc, independent_enc)
     env = StanfordEnvironment(disc_thetas=True) 
+    dataset_collector = None
+
+    if dataset_dir is not None:
+        dataset_config = {
+            "model_name": vlp.model_name,
+            "source_model_path": load_paths[0] if load_paths is not None else None,
+            "num_episodes": vlp.max_episodes_test,
+            "max_steps": sep.max_steps,
+            "num_particles": vlp.num_par_pf,
+            "image_format": "png",
+            "image_resolution": "512x512",
+            "fields_per_step": [
+                "image_file",
+                "state",
+                "orientation",
+                "particle_states",
+                "particle_weights",
+                "action",
+                "reward",
+                "done",
+                "next_state",
+                "next_orientation",
+            ],
+        }
+        dataset_collector = DatasetCollector(dataset_dir, experiment_id, dataset_config)
+        print("Collecting dataset to %s" % dataset_collector.run_dir)
 
     # Let the user load in a previous model
     if load_paths is not None:
@@ -636,6 +763,8 @@ def vts_lightdark_driver(shared_enc=False, independent_enc=False, load_paths=Non
                 states, orientations, images, par_batch = env.get_training_batch(vlp.batch_size, data_files_indices, 
                                                                                 step, normalization_data, vlp.num_par_pf,
                                                                                 noise_amount=noise_amount)
+                # print("Epoch: ", epoch, "Step: ", step, ", noise amount: ", noise_amount)
+                # print("images shape: ", images.shape)
                 states = torch.from_numpy(states).float()
                 images = torch.from_numpy(images).float()
                 images = images.permute(0, 3, 1, 2)  # [batch_size, in_channels, 32, 32]
@@ -763,7 +892,7 @@ def vts_lightdark_driver(shared_enc=False, independent_enc=False, load_paths=Non
         train = False
         vts_lightdark(model, experiment_id,
             train, model_path, shared_enc, independent_enc,
-            test_env_is_diff, test_img_is_diff)
+            test_env_is_diff, test_img_is_diff, dataset_collector)
 
 
 if __name__ == "__main__":
@@ -779,6 +908,15 @@ if __name__ == "__main__":
             load_path = sys.argv[2]
             vts_lightdark_driver(load_paths=[load_path], 
                 pre_training=False, end_to_end=False, save_online_model=False)
+        elif len(sys.argv) > 1 and sys.argv[1] == "--collect-dataset":
+            load_path = sys.argv[2]
+            if len(sys.argv) > 3:
+                dataset_dir = sys.argv[3]
+            else:
+                dataset_dir = "data/vlba_dataset"
+            vts_lightdark_driver(load_paths=[load_path],
+                pre_training=False, end_to_end=False, save_online_model=False,
+                dataset_dir=dataset_dir)
         elif len(sys.argv) > 1 and sys.argv[1] == "--online-train-test":
             # Right into online learning & testing
             vts_lightdark_driver(load_paths="test500k", pre_training=False)
@@ -798,5 +936,3 @@ if __name__ == "__main__":
         else:
             # Everything
             vts_lightdark_driver()
-
-
