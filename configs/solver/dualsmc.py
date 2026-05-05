@@ -1,6 +1,8 @@
 # author: @sdeglurkar, @jatucker4, @michaelhlim
 
-device = 'cuda:0'
+import torch
+
+device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 torch_seed = 1
 random_seed = 1
 np_random_seed = 1
@@ -62,4 +64,3 @@ alpha = 1.0
 gamma = 0.95
 tau = 0.005
 const = 1e-6
-

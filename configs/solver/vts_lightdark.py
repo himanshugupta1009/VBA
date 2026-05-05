@@ -59,7 +59,7 @@ class VTS_LightDark_Params():
         # Training
         self.num_training_data = 16000 
         self.max_episodes_train = 2000 
-        self.max_episodes_test = 500 
+        self.max_episodes_test = 100 
         self.batch_size = 64 
         self.summary_iter = 100
         self.save_iter = 1 
